@@ -157,7 +157,7 @@ jobs:
         run: |
           make integration-test
 
-  cs-driver:
+  csi-driver:
     if: contains(github.ref, 'tags/v')
     runs-on: ubuntu-latest
     steps:
