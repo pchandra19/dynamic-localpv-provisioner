@@ -5,11 +5,11 @@ on:
     branches:
       # on pull requests to develop and release branches
       - 'develop'
-      - 'v*'
+      - 'release/**'
     paths-ignore:
       - '**.md'
       - 'changelogs/**'
-      - 'deploy/helm/**'
+      #- 'deploy/helm/**'
       - 'docs/**'
       - 'design/**'
       - 'LICENSE'
@@ -21,6 +21,43 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Shellcheck
+        uses: reviewdog/action-shellcheck@v1
+        with:
+          github_token: ${{ secrets.github_token }}
+          reporter: github-pr-review
+          path: "."
+          pattern: "*.sh"
+
+      - uses: cachix/install-nix-action@v22
+      - uses: rrbutani/use-nix-shell-action@v1.1.0
+        with:
+          file: shell.nix
+
+      - name: Set up Go 1.19
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.19.13
+          cache: false
+
+      - name: Lint Check
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: v1.56.2
+          args: -E exportloopref,dupl,revive,bodyclose,goconst,misspell -D structcheck --timeout 5m0s
+
+      - name: Check if the chart follows a valid semver version
+        run: |
+          branch_name="${{ github.event.pull_request.base.ref }}"
+          ./scripts/validate-chart-version.sh --branch $branch_name
+
+      - name: Run chart-testing lint
+        run: |
+          ct lint --config ct.yaml
+
 
   unit-test:
     runs-on: ubuntu-latest
@@ -40,7 +77,7 @@ jobs:
         run: make verify-src
 
       - name: Upload Coverage Report
-        uses: codecov/codecov-action@v1
+        uses: codecov/codecov-action@v4
 
   provisioner-localpv:
     runs-on: ubuntu-latest
@@ -88,25 +125,8 @@ jobs:
         with:
           go-version: 1.19.13
 
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v2
-        with:
-          version: v0.5.1
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build Image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./buildscripts/provisioner-localpv/provisioner-localpv.Dockerfile
-          push: false
-          load: true
-          platforms: linux/amd64
-          tags: |
-            openebs/provisioner-localpv:ci
+      - name: Build images locally
+        run: make provisioner-localpv-image || exit 1;
 
       - name: Setup Minikube-Kubernetes
         uses: medyagh/setup-minikube@latest
@@ -122,7 +142,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y xfsprogs quota linux-modules-extra-`uname -r`
           go install -mod=mod github.com/onsi/ginkgo/v2/ginkgo@v2.14.0
-          sed -e '/openebs-provisioner-hostpath/{N;s/IfNotPresent/Never/}' deploy/kubectl/openebs-operator-lite.yaml | kubectl apply -f -
+          helm install localpv-provisioner ./deploy/helm/charts -n $OPENEBS_NAMESPACE --create-namespace --set localpv.image.pullPolicy=Never --set analytics.enabled=false
 
       - name: Integration test
         run: |
